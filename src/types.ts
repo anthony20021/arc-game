@@ -53,6 +53,20 @@ export type RoomEvent =
       state: GameState;
       from: string;
       to?: string;
+    }
+  | {
+      kind: "diagnostic-ping";
+      id: string;
+      from: string;
+      sentAt: number;
+    }
+  | {
+      kind: "diagnostic-pong";
+      id: string;
+      from: string;
+      to: string;
+      sentAt: number;
+      receivedAt: number;
     };
 
 export type PresenceMeta = Player & {

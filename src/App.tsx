@@ -1,7 +1,19 @@
-import { FormEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  FormEvent,
+  PointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import {
+  Activity,
+  AlertTriangle,
   ArrowRight,
+  Bug,
+  CheckCircle2,
   Copy,
   Crown,
   LogOut,
@@ -23,6 +35,7 @@ import {
   sortPlayers,
 } from "./game";
 import { hasSupabaseConfig, supabase } from "./lib/supabase";
+import { supabaseConfigDiagnostics } from "./lib/supabase";
 import type {
   ChatMessage,
   ConnectionStatus,
@@ -34,7 +47,42 @@ import type {
 
 const PLAYER_ID_STORAGE_KEY = "arc-clue-player-id";
 const PLAYER_NAME_STORAGE_KEY = "arc-clue-player-name";
+const LAST_ROOM_STORAGE_KEY = "arc-clue-last-room";
+const ROOM_ROLE_STORAGE_PREFIX = "arc-clue-room-role:";
+const ROOM_STATE_STORAGE_PREFIX = "arc-clue-room-state:";
+const ROOM_SECRETS_STORAGE_PREFIX = "arc-clue-room-secrets:";
 const CHANNEL_EVENT = "room-event";
+const ROOM_RESUME_TTL_MS = 12 * 60 * 60 * 1000;
+
+type RoomRole = "host" | "player";
+
+type StoredGameState = {
+  savedAt: number;
+  state: GameState;
+};
+
+type DiagnosticLevel = "info" | "ok" | "warn" | "error";
+
+type DiagnosticEntry = {
+  id: string;
+  createdAt: number;
+  level: DiagnosticLevel;
+  label: string;
+  detail?: string;
+};
+
+type RealtimeStats = {
+  sentEvents: number;
+  receivedEvents: number;
+  presenceSyncs: number;
+  errors: number;
+  lastAck?: string;
+  lastAckMs?: number;
+  lastTrack?: string;
+  lastTrackMs?: number;
+  lastPongAt?: number;
+  pendingPingId?: string;
+};
 
 function getStoredPlayerId() {
   const stored = localStorage.getItem(PLAYER_ID_STORAGE_KEY);
@@ -44,6 +92,137 @@ function getStoredPlayerId() {
   const playerId = createPlayerId();
   localStorage.setItem(PLAYER_ID_STORAGE_KEY, playerId);
   return playerId;
+}
+
+function getRoomRoleStorageKey(roomCode: string) {
+  return `${ROOM_ROLE_STORAGE_PREFIX}${roomCode}`;
+}
+
+function getRoomStateStorageKey(roomCode: string) {
+  return `${ROOM_STATE_STORAGE_PREFIX}${roomCode}`;
+}
+
+function getRoomSecretsStorageKey(roomCode: string, playerId: string) {
+  return `${ROOM_SECRETS_STORAGE_PREFIX}${roomCode}:${playerId}`;
+}
+
+function getStoredRoomRole(roomCode: string): RoomRole {
+  return localStorage.getItem(getRoomRoleStorageKey(roomCode)) === "host"
+    ? "host"
+    : "player";
+}
+
+function rememberRoom(roomCode: string, role: RoomRole) {
+  localStorage.setItem(LAST_ROOM_STORAGE_KEY, roomCode);
+  localStorage.setItem(getRoomRoleStorageKey(roomCode), role);
+}
+
+function forgetLastRoom(roomCode: string) {
+  if (localStorage.getItem(LAST_ROOM_STORAGE_KEY) === roomCode) {
+    localStorage.removeItem(LAST_ROOM_STORAGE_KEY);
+  }
+}
+
+function loadStoredGameState(roomCode: string) {
+  if (!roomCode) return null;
+
+  const rawState = localStorage.getItem(getRoomStateStorageKey(roomCode));
+
+  if (!rawState) return null;
+
+  try {
+    const parsed = JSON.parse(rawState) as StoredGameState;
+
+    if (!parsed.state || Date.now() - parsed.savedAt > ROOM_RESUME_TTL_MS) {
+      localStorage.removeItem(getRoomStateStorageKey(roomCode));
+      return null;
+    }
+
+    return parsed.state;
+  } catch {
+    localStorage.removeItem(getRoomStateStorageKey(roomCode));
+    return null;
+  }
+}
+
+function saveStoredGameState(roomCode: string, state: GameState | null) {
+  const key = getRoomStateStorageKey(roomCode);
+
+  if (!state) {
+    localStorage.removeItem(key);
+    return;
+  }
+
+  localStorage.setItem(
+    key,
+    JSON.stringify({
+      savedAt: Date.now(),
+      state,
+    } satisfies StoredGameState),
+  );
+}
+
+function loadStoredSecrets(roomCode: string, playerId: string) {
+  if (!roomCode) return {};
+
+  const rawSecrets = localStorage.getItem(
+    getRoomSecretsStorageKey(roomCode, playerId),
+  );
+
+  if (!rawSecrets) return {};
+
+  try {
+    const parsed = JSON.parse(rawSecrets) as Record<string, number>;
+
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .map(([round, secret]) => [Number(round), secret])
+        .filter(([round, secret]) => {
+          return Number.isFinite(round) && typeof secret === "number";
+        }),
+    ) as Record<number, number>;
+  } catch {
+    localStorage.removeItem(getRoomSecretsStorageKey(roomCode, playerId));
+    return {};
+  }
+}
+
+function saveStoredSecrets(
+  roomCode: string,
+  playerId: string,
+  secrets: Record<number, number>,
+) {
+  const key = getRoomSecretsStorageKey(roomCode, playerId);
+
+  if (Object.keys(secrets).length === 0) {
+    localStorage.removeItem(key);
+    return;
+  }
+
+  localStorage.setItem(key, JSON.stringify(secrets));
+}
+
+function getResumeInfo(playerId: string) {
+  const storedName = localStorage.getItem(PLAYER_NAME_STORAGE_KEY);
+  const roomCode = normalizeRoomCode(
+    localStorage.getItem(LAST_ROOM_STORAGE_KEY) ?? "",
+  );
+
+  if (!hasSupabaseConfig || !storedName || roomCode.length !== 5) {
+    return {
+      isHost: false,
+      roomCode: "",
+      secretByRound: {},
+      state: null,
+    };
+  }
+
+  return {
+    isHost: getStoredRoomRole(roomCode) === "host",
+    roomCode,
+    secretByRound: loadStoredSecrets(roomCode, playerId),
+    state: loadStoredGameState(roomCode),
+  };
 }
 
 function playerNameFor(players: Player[], id?: string) {
@@ -56,41 +235,139 @@ function formatPercent(value?: number) {
 }
 
 function flattenPresence(state: Record<string, PresenceMeta[]>) {
-  return sortPlayers(
+  return dedupePlayers(
     Object.values(state)
       .flat()
       .filter((meta) => meta.id && meta.name && meta.joinedAt),
   );
 }
 
+function dedupePlayers(players: Player[]) {
+  const byId = new Map<string, Player>();
+
+  for (const player of players) {
+    const current = byId.get(player.id);
+
+    if (!current) {
+      byId.set(player.id, player);
+      continue;
+    }
+
+    byId.set(player.id, {
+      ...current,
+      name: player.name || current.name,
+      joinedAt: Math.min(current.joinedAt, player.joinedAt),
+      isHost: current.isHost || player.isHost,
+    });
+  }
+
+  return sortPlayers([...byId.values()]);
+}
+
+function pickActivePlayers(players: Player[]) {
+  const uniquePlayers = dedupePlayers(players);
+  const host = uniquePlayers.find((player) => player.isHost) ?? uniquePlayers[0];
+
+  if (!host) return [];
+
+  return [
+    host,
+    ...uniquePlayers.filter((player) => player.id !== host.id),
+  ].slice(0, 2);
+}
+
+function describeRealtimeResponse(response: unknown) {
+  if (typeof response === "string") return response;
+
+  try {
+    return JSON.stringify(response);
+  } catch {
+    return String(response);
+  }
+}
+
+function responseLooksOk(response: unknown) {
+  if (typeof response === "string") {
+    return response.toLowerCase() === "ok";
+  }
+
+  if (response && typeof response === "object" && "status" in response) {
+    return String(response.status).toLowerCase() === "ok";
+  }
+
+  return false;
+}
+
+function formatDiagnosticTime(timestamp: number) {
+  return new Intl.DateTimeFormat("fr-FR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(timestamp);
+}
+
 export function App() {
+  const showDiagnostics = window.location.pathname
+    .replace(/\/+$/, "")
+    .endsWith("/dev");
   const [playerId] = useState(getStoredPlayerId);
+  const [resumeInfo] = useState(() => getResumeInfo(playerId));
   const [playerName, setPlayerName] = useState(
     () => localStorage.getItem(PLAYER_NAME_STORAGE_KEY) ?? "",
   );
-  const [roomCodeInput, setRoomCodeInput] = useState("");
-  const [roomCode, setRoomCode] = useState("");
-  const [isHost, setIsHost] = useState(false);
+  const [roomCodeInput, setRoomCodeInput] = useState(resumeInfo.roomCode);
+  const [roomCode, setRoomCode] = useState(resumeInfo.roomCode);
+  const [isHost, setIsHost] = useState(resumeInfo.isHost);
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("idle");
   const [players, setPlayers] = useState<Player[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [messageDraft, setMessageDraft] = useState("");
-  const [gameState, setGameState] = useState<GameState | null>(null);
-  const [secretByRound, setSecretByRound] = useState<Record<number, number>>({});
+  const [gameState, setGameState] = useState<GameState | null>(
+    resumeInfo.state,
+  );
+  const [secretByRound, setSecretByRound] = useState<Record<number, number>>(
+    resumeInfo.secretByRound,
+  );
   const [clueDraft, setClueDraft] = useState("");
   const [guess, setGuess] = useState(50);
+  const [diagnostics, setDiagnostics] = useState<DiagnosticEntry[]>([]);
+  const [realtimeStats, setRealtimeStats] = useState<RealtimeStats>({
+    sentEvents: 0,
+    receivedEvents: 0,
+    presenceSyncs: 0,
+    errors: 0,
+  });
 
   const channelRef = useRef<RealtimeChannel | null>(null);
   const gameStateRef = useRef<GameState | null>(null);
+  const localJoinedAtRef = useRef(Date.now());
+  const autoStartedKeyRef = useRef<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  const sortedPlayers = useMemo(() => sortPlayers(players), [players]);
-  const activePlayers = sortedPlayers.slice(0, 2);
+  const localPlayer = useMemo<Player>(
+    () => ({
+      id: playerId,
+      name: playerName.trim() || "Moi",
+      joinedAt: localJoinedAtRef.current,
+      isHost,
+    }),
+    [isHost, playerId, playerName],
+  );
+  const sortedPlayers = useMemo(() => {
+    const hasLocalPresence = players.some((player) => player.id === playerId);
+    const roster = hasLocalPresence || !roomCode ? players : [...players, localPlayer];
+
+    return dedupePlayers(roster);
+  }, [localPlayer, playerId, players, roomCode]);
+  const activePlayers = useMemo(
+    () => pickActivePlayers(sortedPlayers),
+    [sortedPlayers],
+  );
   const currentPlayer = sortedPlayers.find((player) => player.id === playerId);
   const roomHost =
     sortedPlayers.find((player) => player.isHost) ?? sortedPlayers[0] ?? null;
-  const userIsHost = roomHost?.id === playerId;
+  const userIsHost = isHost || roomHost?.id === playerId;
   const userIsActive = activePlayers.some((player) => player.id === playerId);
   const clueGiverName = playerNameFor(sortedPlayers, gameState?.clueGiverId);
   const guesserName = playerNameFor(sortedPlayers, gameState?.guesserId);
@@ -99,6 +376,87 @@ export function App() {
   const secretPosition =
     gameState && userIsClueGiver ? secretByRound[gameState.round] : undefined;
 
+  const addDiagnostic = useCallback(
+    (level: DiagnosticLevel, label: string, detail?: string) => {
+      setDiagnostics((current) =>
+        [
+          {
+            id: createPlayerId(),
+            createdAt: Date.now(),
+            level,
+            label,
+            detail,
+          },
+          ...current,
+        ].slice(0, 12),
+      );
+    },
+    [],
+  );
+
+  const broadcastRoomEvent = useCallback(
+    async (event: RoomEvent, label = "Evenement Realtime") => {
+      const channel = channelRef.current;
+
+      if (!channel) {
+        setRealtimeStats((current) => ({
+          ...current,
+          errors: current.errors + 1,
+        }));
+        addDiagnostic(
+          "error",
+          `${label}: channel absent`,
+          "Aucune connexion Realtime active. Rejoins ou cree une room.",
+        );
+        return false;
+      }
+
+      const startedAt = performance.now();
+      setRealtimeStats((current) => ({
+        ...current,
+        sentEvents: current.sentEvents + 1,
+      }));
+
+      try {
+        const response = await channel.send({
+          type: "broadcast",
+          event: CHANNEL_EVENT,
+          payload: event,
+        });
+        const ackMs = Math.round(performance.now() - startedAt);
+        const ack = describeRealtimeResponse(response);
+        const isOk = responseLooksOk(response);
+
+        setRealtimeStats((current) => ({
+          ...current,
+          errors: isOk ? current.errors : current.errors + 1,
+          lastAck: ack,
+          lastAckMs: ackMs,
+        }));
+        addDiagnostic(
+          isOk ? "ok" : "error",
+          isOk ? `${label}: ack OK` : `${label}: ack KO`,
+          `${ack} en ${ackMs}ms`,
+        );
+
+        return isOk;
+      } catch (error) {
+        setRealtimeStats((current) => ({
+          ...current,
+          errors: current.errors + 1,
+          lastAck: "exception",
+        }));
+        addDiagnostic(
+          "error",
+          `${label}: exception`,
+          error instanceof Error ? error.message : String(error),
+        );
+        return false;
+      }
+    },
+    [addDiagnostic],
+  );
+
   useEffect(() => {
     gameStateRef.current = gameState;
   }, [gameState]);
@@ -106,6 +464,34 @@ export function App() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    if (!roomCode) return;
+
+    rememberRoom(roomCode, isHost ? "host" : "player");
+  }, [isHost, roomCode]);
+
+  useEffect(() => {
+    if (!roomCode) return;
+
+    saveStoredGameState(roomCode, gameState);
+  }, [gameState, roomCode]);
+
+  useEffect(() => {
+    if (!roomCode) return;
+
+    saveStoredSecrets(roomCode, playerId, secretByRound);
+  }, [playerId, roomCode, secretByRound]);
+
+  useEffect(() => {
+    if (resumeInfo.roomCode) {
+      addDiagnostic(
+        "ok",
+        "Room reprise",
+        `Reconnexion automatique a la room ${resumeInfo.roomCode}.`,
+      );
+    }
+  }, [addDiagnostic, resumeInfo.roomCode]);
 
   useEffect(() => {
     if (!gameState || !userIsClueGiver || secretByRound[gameState.round]) {
@@ -119,35 +505,145 @@ export function App() {
   }, [gameState, secretByRound, userIsClueGiver]);
 
   useEffect(() => {
-    if (!roomCode || !supabase) return;
+    if (
+      !roomCode ||
+      gameState ||
+      !userIsHost ||
+      activePlayers.length < 2 ||
+      connectionStatus !== "SUBSCRIBED"
+    ) {
+      return;
+    }
+
+    const activeKey = `${roomCode}:${activePlayers
+      .map((player) => player.id)
+      .join(":")}`;
+
+    if (autoStartedKeyRef.current === activeKey) {
+      return;
+    }
+
+    autoStartedKeyRef.current = activeKey;
+
+    const timer = window.setTimeout(() => {
+      if (gameStateRef.current) return;
+
+      const nextState = createNextTurn(activePlayers);
+      setClueDraft("");
+      setGuess(50);
+      sendRoomEvent(
+        { kind: "state-sync", state: nextState, from: playerId },
+        "Demarrage auto",
+      );
+      addDiagnostic(
+        "ok",
+        "Manche demarree",
+        "Deux joueurs detectes, la partie est lancee automatiquement.",
+      );
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    activePlayers,
+    addDiagnostic,
+    connectionStatus,
+    gameState,
+    playerId,
+    roomCode,
+    userIsHost,
+  ]);
+
+  useEffect(() => {
+    if (!roomCode) return;
+
+    if (!supabase) {
+      addDiagnostic(
+        "error",
+        "Configuration Supabase absente",
+        "Vite ne voit pas VITE_SUPABASE_URL et VITE_SUPABASE_PUBLISHABLE_KEY.",
+      );
+      return;
+    }
 
     const realtimeClient = supabase;
+    const topic = `arc-clue:${roomCode}`;
 
     setConnectionStatus("connecting");
+    addDiagnostic("info", "Connexion Realtime", topic);
 
-    const channel = realtimeClient.channel(`arc-clue:${roomCode}`, {
+    const channel = realtimeClient.channel(topic, {
       config: {
         broadcast: { self: false, ack: true },
-        presence: { key: playerId },
+        presence: { enabled: true, key: playerId } as {
+          enabled: true;
+          key: string;
+        },
       },
     });
 
     channelRef.current = channel;
 
-    const sendRoomEvent = (event: RoomEvent) => {
-      channel.send({
-        type: "broadcast",
-        event: CHANNEL_EVENT,
-        payload: event,
-      });
-    };
-
     channel
       .on("presence", { event: "sync" }, () => {
-        setPlayers(flattenPresence(channel.presenceState() as Record<string, PresenceMeta[]>));
+        const nextPlayers = flattenPresence(
+          channel.presenceState() as Record<string, PresenceMeta[]>,
+        );
+        setPlayers(nextPlayers);
+        setRealtimeStats((current) => ({
+          ...current,
+          presenceSyncs: current.presenceSyncs + 1,
+        }));
+        addDiagnostic(
+          "ok",
+          "Presence sync",
+          `${nextPlayers.length} client(s) detecte(s) dans la room.`,
+        );
       })
       .on("broadcast", { event: CHANNEL_EVENT }, ({ payload }) => {
         const event = payload as RoomEvent;
+
+        setRealtimeStats((current) => ({
+          ...current,
+          receivedEvents: current.receivedEvents + 1,
+        }));
+
+        if (event.kind === "diagnostic-ping") {
+          addDiagnostic(
+            "info",
+            "Ping diagnostic recu",
+            `Ping recu depuis ${event.from.slice(0, 8)}.`,
+          );
+
+          if (event.from !== playerId) {
+            void broadcastRoomEvent(
+              {
+                kind: "diagnostic-pong",
+                id: event.id,
+                from: playerId,
+                to: event.from,
+                sentAt: Date.now(),
+                receivedAt: event.sentAt,
+              },
+              "Pong diagnostic",
+            );
+          }
+        }
+
+        if (event.kind === "diagnostic-pong" && event.to === playerId) {
+          setRealtimeStats((current) => ({
+            ...current,
+            pendingPingId:
+              current.pendingPingId === event.id
+                ? undefined
+                : current.pendingPingId,
+            lastPongAt: Date.now(),
+          }));
+          addDiagnostic(
+            "ok",
+            "Pong diagnostic recu",
+            `Un autre client a recu le ping ${event.id.slice(0, 8)}.`,
+          );
+        }
 
         if (event.kind === "chat-message") {
           setMessages((current) => {
@@ -175,28 +671,66 @@ export function App() {
           const currentState = gameStateRef.current;
 
           if (currentState) {
-            sendRoomEvent({
-              kind: "state-sync",
-              state: currentState,
-              from: playerId,
-              to: event.from,
-            });
+            void broadcastRoomEvent(
+              {
+                kind: "state-sync",
+                state: currentState,
+                from: playerId,
+                to: event.from,
+              },
+              "Sync ciblee",
+            );
           }
         }
       })
       .subscribe(async (status) => {
         setConnectionStatus(status as ConnectionStatus);
+        addDiagnostic(
+          status === "SUBSCRIBED" ? "ok" : "warn",
+          "Statut channel",
+          status,
+        );
 
         if (status === "SUBSCRIBED") {
-          await channel.track({
+          const startedAt = performance.now();
+          const trackResponse = await channel.track({
             id: playerId,
             name: playerName.trim(),
             joinedAt: Date.now(),
             isHost,
             onlineAt: new Date().toISOString(),
           } satisfies PresenceMeta);
+          const trackMs = Math.round(performance.now() - startedAt);
+          const track = describeRealtimeResponse(trackResponse);
+          const trackOk = responseLooksOk(trackResponse);
 
-          sendRoomEvent({ kind: "sync-request", from: playerId });
+          setRealtimeStats((current) => ({
+            ...current,
+            errors: trackOk ? current.errors : current.errors + 1,
+            lastTrack: track,
+            lastTrackMs: trackMs,
+          }));
+          addDiagnostic(
+            trackOk ? "ok" : "error",
+            trackOk ? "Presence track OK" : "Presence track KO",
+            `${track} en ${trackMs}ms`,
+          );
+
+          void broadcastRoomEvent(
+            { kind: "sync-request", from: playerId },
+            "Demande de sync",
+          );
+        }
+
+        if (
+          status === "CHANNEL_ERROR" ||
+          status === "TIMED_OUT" ||
+          status === "CLOSED"
+        ) {
+          setRealtimeStats((current) => ({
+            ...current,
+            errors: current.errors + 1,
+          }));
         }
       });
 
@@ -204,7 +738,14 @@ export function App() {
       channelRef.current = null;
       realtimeClient.removeChannel(channel);
     };
-  }, [isHost, playerId, playerName, roomCode]);
+  }, [
+    addDiagnostic,
+    broadcastRoomEvent,
+    isHost,
+    playerId,
+    playerName,
+    roomCode,
+  ]);
 
   const applyLocalEvent = (event: RoomEvent) => {
     if (event.kind === "chat-message") {
@@ -216,13 +757,55 @@ export function App() {
     }
   };
 
-  const sendRoomEvent = (event: RoomEvent) => {
+  const sendRoomEvent = (event: RoomEvent, label?: string) => {
     applyLocalEvent(event);
-    channelRef.current?.send({
-      type: "broadcast",
-      event: CHANNEL_EVENT,
-      payload: event,
-    });
+    void broadcastRoomEvent(event, label);
+  };
+
+  const runRealtimeTest = () => {
+    if (connectionStatus !== "SUBSCRIBED") {
+      addDiagnostic(
+        "error",
+        "Test impossible",
+        "Le channel n'est pas encore SUBSCRIBED.",
+      );
+      return;
+    }
+
+    const id = createPlayerId();
+    setRealtimeStats((current) => ({
+      ...current,
+      pendingPingId: id,
+    }));
+    addDiagnostic(
+      "info",
+      "Test broadcast lance",
+      "Ouvre un deuxieme onglet dans la meme room pour recevoir un pong.",
+    );
+    void broadcastRoomEvent(
+      { kind: "diagnostic-ping", id, from: playerId, sentAt: Date.now() },
+      "Ping diagnostic",
+    );
+
+    window.setTimeout(() => {
+      setRealtimeStats((current) => {
+        if (current.pendingPingId !== id) return current;
+
+        addDiagnostic(
+          "warn",
+          "Aucun pong recu",
+          "Ack serveur possible, mais aucun autre client n'a repondu.",
+        );
+        return {
+          ...current,
+          pendingPingId: undefined,
+        };
+      });
+    }, 3500);
+  };
+
+  const clearDiagnostics = () => {
+    setDiagnostics([]);
   };
 
   const joinRoom = (event: FormEvent<HTMLFormElement>) => {
@@ -235,12 +818,16 @@ export function App() {
 
     if (!trimmedName || !normalizedRoomCode) return;
 
+    const storedRole = getStoredRoomRole(normalizedRoomCode);
+
     localStorage.setItem(PLAYER_NAME_STORAGE_KEY, trimmedName);
     setPlayerName(trimmedName);
-    setIsHost(false);
+    rememberRoom(normalizedRoomCode, storedRole);
+    setIsHost(storedRole === "host");
     setRoomCode(normalizedRoomCode);
     setMessages([]);
-    setGameState(null);
+    setGameState(loadStoredGameState(normalizedRoomCode));
+    setSecretByRound(loadStoredSecrets(normalizedRoomCode, playerId));
   };
 
   const createRoom = () => {
@@ -250,15 +837,21 @@ export function App() {
 
     if (!trimmedName) return;
 
+    const nextRoomCode = createRoomCode();
+
     localStorage.setItem(PLAYER_NAME_STORAGE_KEY, trimmedName);
+    rememberRoom(nextRoomCode, "host");
     setPlayerName(trimmedName);
     setIsHost(true);
-    setRoomCode(createRoomCode());
+    setRoomCodeInput(nextRoomCode);
+    setRoomCode(nextRoomCode);
     setMessages([]);
     setGameState(null);
+    setSecretByRound({});
   };
 
   const leaveRoom = () => {
+    forgetLastRoom(roomCode);
     setRoomCode("");
     setRoomCodeInput("");
     setPlayers([]);
@@ -268,6 +861,7 @@ export function App() {
     setClueDraft("");
     setGuess(50);
     setConnectionStatus("idle");
+    autoStartedKeyRef.current = null;
   };
 
   const copyRoomCode = async () => {
@@ -438,6 +1032,18 @@ export function App() {
               </button>
             </div>
           </form>
+
+          {showDiagnostics && (
+            <DiagnosticsPanel
+              connectionStatus={connectionStatus}
+              diagnostics={diagnostics}
+              playersCount={players.length}
+              realtimeStats={realtimeStats}
+              roomCode={roomCode}
+              onClear={clearDiagnostics}
+              onRunTest={runRealtimeTest}
+            />
+          )}
         </section>
       </main>
     );
@@ -492,6 +1098,18 @@ export function App() {
             <p className="helper">
               La room est deja pleine. Tu peux suivre la manche en spectateur.
             </p>
+          )}
+
+          {showDiagnostics && (
+            <DiagnosticsPanel
+              connectionStatus={connectionStatus}
+              diagnostics={diagnostics}
+              playersCount={players.length}
+              realtimeStats={realtimeStats}
+              roomCode={roomCode}
+              onClear={clearDiagnostics}
+              onRunTest={runRealtimeTest}
+            />
           )}
         </aside>
 
@@ -574,6 +1192,149 @@ type RoundHeaderProps = {
   userIsHost: boolean;
   onStartRound: () => void;
 };
+
+type DiagnosticsPanelProps = {
+  connectionStatus: ConnectionStatus;
+  diagnostics: DiagnosticEntry[];
+  playersCount: number;
+  realtimeStats: RealtimeStats;
+  roomCode: string;
+  onClear: () => void;
+  onRunTest: () => void;
+};
+
+function DiagnosticsPanel({
+  connectionStatus,
+  diagnostics,
+  playersCount,
+  realtimeStats,
+  roomCode,
+  onClear,
+  onRunTest,
+}: DiagnosticsPanelProps) {
+  const urlOk = supabaseConfigDiagnostics.hasUrl;
+  const keyOk =
+    supabaseConfigDiagnostics.hasKey &&
+    supabaseConfigDiagnostics.keyKind !== "secret invalide cote client";
+  const channelOk = connectionStatus === "SUBSCRIBED";
+
+  return (
+    <section className="diagnostic-panel" aria-label="Diagnostic Supabase">
+      <div className="panel-heading diagnostic-heading">
+        <Bug aria-hidden="true" />
+        <h2>Diagnostic</h2>
+      </div>
+
+      <div className="diagnostic-grid">
+        <DiagnosticItem
+          label="URL"
+          level={urlOk ? "ok" : "error"}
+          value={supabaseConfigDiagnostics.host ?? "manquante"}
+        />
+        <DiagnosticItem
+          label="Key"
+          level={keyOk ? "ok" : "error"}
+          value={supabaseConfigDiagnostics.keyKind ?? "manquante"}
+        />
+        <DiagnosticItem
+          label="Channel"
+          level={channelOk ? "ok" : roomCode ? "warn" : "info"}
+          value={roomCode ? connectionStatus : "hors room"}
+        />
+        <DiagnosticItem
+          label="Presence"
+          level={playersCount > 0 ? "ok" : roomCode ? "warn" : "info"}
+          value={`${playersCount} client(s)`}
+        />
+      </div>
+
+      <div className="diagnostic-stats">
+        <span>Envoyes {realtimeStats.sentEvents}</span>
+        <span>Recus {realtimeStats.receivedEvents}</span>
+        <span>Sync {realtimeStats.presenceSyncs}</span>
+        <span>Erreurs {realtimeStats.errors}</span>
+      </div>
+
+      {(realtimeStats.lastAck || realtimeStats.lastTrack) && (
+        <div className="diagnostic-details">
+          {realtimeStats.lastAck && (
+            <span>
+              Ack {realtimeStats.lastAck}
+              {typeof realtimeStats.lastAckMs === "number"
+                ? ` (${realtimeStats.lastAckMs}ms)`
+                : ""}
+            </span>
+          )}
+          {realtimeStats.lastTrack && (
+            <span>
+              Track {realtimeStats.lastTrack}
+              {typeof realtimeStats.lastTrackMs === "number"
+                ? ` (${realtimeStats.lastTrackMs}ms)`
+                : ""}
+            </span>
+          )}
+          {realtimeStats.lastPongAt && (
+            <span>Pong {formatDiagnosticTime(realtimeStats.lastPongAt)}</span>
+          )}
+        </div>
+      )}
+
+      <div className="diagnostic-actions">
+        <button
+          className="button button--small"
+          disabled={!roomCode || !channelOk}
+          type="button"
+          onClick={onRunTest}
+        >
+          <Activity aria-hidden="true" />
+          Tester
+        </button>
+        <button
+          className="button button--small button--ghost"
+          disabled={diagnostics.length === 0}
+          type="button"
+          onClick={onClear}
+        >
+          Effacer
+        </button>
+      </div>
+
+      <div className="diagnostic-log">
+        {diagnostics.length === 0 ? (
+          <p>Aucun evenement diagnostic.</p>
+        ) : (
+          diagnostics.map((entry) => (
+            <article className="diagnostic-entry" data-level={entry.level} key={entry.id}>
+              <div>
+                <strong>{entry.label}</strong>
+                <time>{formatDiagnosticTime(entry.createdAt)}</time>
+              </div>
+              {entry.detail && <p>{entry.detail}</p>}
+            </article>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+type DiagnosticItemProps = {
+  label: string;
+  level: DiagnosticLevel;
+  value: string;
+};
+
+function DiagnosticItem({ label, level, value }: DiagnosticItemProps) {
+  const Icon = level === "ok" ? CheckCircle2 : AlertTriangle;
+
+  return (
+    <div className="diagnostic-item" data-level={level}>
+      <Icon aria-hidden="true" />
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
 
 function RoundHeader({
   activePlayers,

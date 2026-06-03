@@ -43,3 +43,22 @@ Le joueur qui donne l'indice voit une position secrete sur le demi-cercle et pro
 - 2 points : proche
 - 1 point : correct
 - 0 point : trop loin
+
+## Diagnostic
+
+Le panneau diagnostic Supabase est masque par defaut. Pour l'afficher, ouvre la
+meme app avec `/dev` a la fin de l'URL, par exemple :
+
+```text
+http://localhost:5174/dev
+```
+
+## Reprise de partie
+
+La derniere room, le role du joueur, l'etat de manche et la position secrete
+locale sont sauvegardes dans le navigateur pendant 12 heures. Si un joueur
+recharge ou ferme l'onglet par accident, il peut rouvrir l'app et rejoindre la
+partie avec le meme navigateur.
+
+Sans base de donnees, une reprise sur un autre appareil ou apres suppression du
+stockage local n'est pas garantie.
