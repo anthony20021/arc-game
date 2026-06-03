@@ -725,7 +725,9 @@ input:focus {
 }
 
 .chat-panel {
+  min-height: 0;
   gap: 14px;
+  overflow: hidden;
 }
 
 .messages {
@@ -733,7 +735,8 @@ input:focus {
   flex: 1;
   flex-direction: column;
   gap: 10px;
-  min-height: 360px;
+  min-height: 0;
+  max-height: calc(100vh - 238px);
   overflow-y: auto;
   padding-right: 4px;
 }
@@ -764,7 +767,25 @@ input:focus {
 }
 
 .chat-form {
+  flex: 0 0 auto;
   grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.guess-controls {
+  display: grid;
+  width: min(420px, 100%);
+  grid-template-columns: minmax(110px, 150px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: end;
+}
+
+.guess-controls label {
+  color: var(--muted);
+}
+
+.guess-controls input {
+  text-align: center;
+  font-weight: 900;
 }
 
 .sr-only {
@@ -823,6 +844,7 @@ input:focus {
   .entry-actions,
   .players,
   .clue-form,
+  .guess-controls,
   .result-grid {
     grid-template-columns: 1fr;
   }

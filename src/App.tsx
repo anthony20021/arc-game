@@ -1464,10 +1464,26 @@ function GameBoard({
         </div>
 
         {userIsGuesser && typeof gameState.guess !== "number" && (
-          <button className="button" type="button" onClick={onSubmitGuess}>
-            Valider {formatPercent(guess)}
-            <ArrowRight aria-hidden="true" />
-          </button>
+          <div className="guess-controls">
+            <label>
+              Position
+              <input
+                max={100}
+                min={0}
+                step={1}
+                type="number"
+                value={guess}
+                onChange={(event) => {
+                  const nextValue = event.currentTarget.valueAsNumber;
+                  onGuessChange(clampPercent(Number.isNaN(nextValue) ? 0 : nextValue));
+                }}
+              />
+            </label>
+            <button className="button" type="button" onClick={onSubmitGuess}>
+              Valider {formatPercent(guess)}
+              <ArrowRight aria-hidden="true" />
+            </button>
+          </div>
         )}
 
         {userIsClueGiver && typeof gameState.guess === "number" && (
