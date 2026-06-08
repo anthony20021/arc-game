@@ -57,6 +57,7 @@ import type {
 const PLAYER_ID_STORAGE_KEY = "arc-clue-player-id";
 const PLAYER_NAME_STORAGE_KEY = "arc-clue-player-name";
 const LAST_ROOM_STORAGE_KEY = "arc-clue-last-room";
+const ADMIN_BOOTSTRAP_DONE_STORAGE_KEY = "arc-clue-admin-bootstrap-done";
 const ROOM_ROLE_STORAGE_PREFIX = "arc-clue-room-role:";
 const ROOM_STATE_STORAGE_PREFIX = "arc-clue-room-state:";
 const ROOM_SECRETS_STORAGE_PREFIX = "arc-clue-room-secrets:";
@@ -141,6 +142,19 @@ function getStoredPlayerId() {
   const playerId = createPlayerId();
   localStorage.setItem(PLAYER_ID_STORAGE_KEY, playerId);
   return playerId;
+}
+
+function getStoredNeedsBootstrapAdmin() {
+  return localStorage.getItem(ADMIN_BOOTSTRAP_DONE_STORAGE_KEY) !== "true";
+}
+
+function rememberAdminBootstrapDone(done: boolean) {
+  if (done) {
+    localStorage.setItem(ADMIN_BOOTSTRAP_DONE_STORAGE_KEY, "true");
+    return;
+  }
+
+  localStorage.removeItem(ADMIN_BOOTSTRAP_DONE_STORAGE_KEY);
 }
 
 function clampTargetScore(value: number) {
@@ -463,7 +477,9 @@ export function App() {
   const [authUsername, setAuthUsername] = useState("");
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
-  const [needsBootstrapAdmin, setNeedsBootstrapAdmin] = useState(false);
+  const [needsBootstrapAdmin, setNeedsBootstrapAdmin] = useState(
+    getStoredNeedsBootstrapAdmin,
+  );
   const [profile, setProfile] = useState<Profile | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const [databaseLoading, setDatabaseLoading] = useState(false);
@@ -784,11 +800,14 @@ export function App() {
         };
 
         if (!isMounted || !response.ok) return;
-        setNeedsBootstrapAdmin(Boolean(payload.needsBootstrap));
+
+        const needsBootstrap = Boolean(payload.needsBootstrap);
+        rememberAdminBootstrapDone(!needsBootstrap);
+        setNeedsBootstrapAdmin(needsBootstrap);
       })
       .catch(() => {
         if (!isMounted) return;
-        setNeedsBootstrapAdmin(false);
+        setNeedsBootstrapAdmin(getStoredNeedsBootstrapAdmin());
       });
 
     return () => {
@@ -1508,12 +1527,18 @@ export function App() {
       };
 
       if (!response.ok) {
+        if (response.status === 409) {
+          rememberAdminBootstrapDone(true);
+          setNeedsBootstrapAdmin(false);
+        }
+
         throw new Error(payload.error ?? "Initialisation admin impossible.");
       }
 
       const email = payload.email ?? "admin@arc-clue.local";
       const password = payload.password ?? "admin";
 
+      rememberAdminBootstrapDone(true);
       setNeedsBootstrapAdmin(false);
       setAuthMode("login");
       setAuthEmail("admin");
