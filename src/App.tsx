@@ -182,6 +182,50 @@ function normalizeJoinedProfile(value: unknown) {
   return profile as Profile;
 }
 
+function describeAppError(error: unknown) {
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    const code = typeof record.code === "string" ? record.code : "";
+    const message = typeof record.message === "string" ? record.message : "";
+    const details = typeof record.details === "string" ? record.details : "";
+    const hint = typeof record.hint === "string" ? record.hint : "";
+
+    if (
+      code === "PGRST205" ||
+      message.includes("public.profiles") ||
+      message.includes("schema cache")
+    ) {
+      return [
+        "Base Supabase pas initialisee : la table public.profiles est introuvable.",
+        "Execute supabase/schema.sql dans le SQL Editor Supabase, puis recharge l'app.",
+        code ? `Code: ${code}.` : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
+
+    if (message.toLowerCase().includes("user already registered")) {
+      return "Ce compte existe deja. Clique sur \"J'ai deja un compte\" puis connecte-toi.";
+    }
+
+    if (message) {
+      return [message, details, hint ? `Hint: ${hint}` : "", code ? `Code: ${code}` : ""]
+        .filter(Boolean)
+        .join(" ");
+    }
+
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+
+  if (error instanceof Error) return error.message;
+
+  return String(error);
+}
+
 async function ensureProfile(user: User, requestedUsername?: string) {
   if (!supabase) return null;
 
@@ -620,7 +664,7 @@ export function App() {
       const payload = await adminApiRequest<{ users: AdminPlayer[] }>("GET");
       setAdminPlayers(payload.users);
     } catch (error) {
-      setAdminUserMessage(error instanceof Error ? error.message : String(error));
+      setAdminUserMessage(describeAppError(error));
     } finally {
       setAdminUsersLoading(false);
     }
@@ -732,7 +776,7 @@ export function App() {
         })),
       );
     } catch (error) {
-      setDatabaseError(error instanceof Error ? error.message : String(error));
+      setDatabaseError(describeAppError(error));
     } finally {
       setDatabaseLoading(false);
     }
@@ -755,7 +799,7 @@ export function App() {
       })
       .catch((error) => {
         if (!isMounted) return;
-        setAuthError(error instanceof Error ? error.message : String(error));
+        setAuthError(describeAppError(error));
         setAuthReady(true);
       });
 
@@ -787,7 +831,7 @@ export function App() {
       })
       .catch((error) => {
         if (!isMounted) return;
-        setDatabaseError(error instanceof Error ? error.message : String(error));
+        setDatabaseError(describeAppError(error));
       })
       .finally(() => {
         if (!isMounted) return;
@@ -873,7 +917,7 @@ export function App() {
         addDiagnostic(
           "error",
           `${label}: exception`,
-          error instanceof Error ? error.message : String(error),
+          describeAppError(error),
         );
         return false;
       }
@@ -1449,7 +1493,7 @@ export function App() {
         if (error) throw error;
       }
     } catch (error) {
-      setAuthError(error instanceof Error ? error.message : String(error));
+      setAuthError(describeAppError(error));
     } finally {
       setAuthLoading(false);
     }
@@ -1493,7 +1537,7 @@ export function App() {
       setAdminUserMessage("Joueur cree.");
       await loadAdminUsers();
     } catch (error) {
-      setAdminUserMessage(error instanceof Error ? error.message : String(error));
+      setAdminUserMessage(describeAppError(error));
     } finally {
       setAdminUsersLoading(false);
     }
@@ -1514,7 +1558,7 @@ export function App() {
       setAdminUserMessage(isAdmin ? "Admin ajoute." : "Admin retire.");
       await loadAdminUsers();
     } catch (error) {
-      setAdminUserMessage(error instanceof Error ? error.message : String(error));
+      setAdminUserMessage(describeAppError(error));
     } finally {
       setAdminUsersLoading(false);
     }
@@ -1545,7 +1589,7 @@ export function App() {
       }));
       setAdminUserMessage("Mot de passe change.");
     } catch (error) {
-      setAdminUserMessage(error instanceof Error ? error.message : String(error));
+      setAdminUserMessage(describeAppError(error));
     } finally {
       setAdminUsersLoading(false);
     }
@@ -1568,7 +1612,7 @@ export function App() {
     });
 
     if (error) {
-      setDatabaseError(error.message);
+      setDatabaseError(describeAppError(error));
       return;
     }
 
@@ -1591,7 +1635,7 @@ export function App() {
       .eq("id", themeId);
 
     if (error) {
-      setDatabaseError(error.message);
+      setDatabaseError(describeAppError(error));
       return;
     }
 
@@ -1606,7 +1650,7 @@ export function App() {
     const { error } = await supabase.from("themes").delete().eq("id", themeId);
 
     if (error) {
-      setDatabaseError(error.message);
+      setDatabaseError(describeAppError(error));
       return;
     }
 
@@ -1648,7 +1692,9 @@ export function App() {
       .maybeSingle();
 
     if (groupError || !group) {
-      setDatabaseError(groupError?.message ?? "Groupe introuvable apres creation.");
+      setDatabaseError(
+        groupError ? describeAppError(groupError) : "Groupe introuvable apres creation.",
+      );
       return;
     }
 
@@ -1660,7 +1706,7 @@ export function App() {
     );
 
     if (itemsError) {
-      setDatabaseError(itemsError.message);
+      setDatabaseError(describeAppError(itemsError));
       return;
     }
 
@@ -1682,7 +1728,7 @@ export function App() {
       .eq("owner_id", profile.id);
 
     if (error) {
-      setDatabaseError(error.message);
+      setDatabaseError(describeAppError(error));
       return;
     }
 
@@ -1707,7 +1753,9 @@ export function App() {
       .maybeSingle();
 
     if (targetError || !target) {
-      setDatabaseError(targetError?.message ?? "Aucun joueur avec ce pseudo.");
+      setDatabaseError(
+        targetError ? describeAppError(targetError) : "Aucun joueur avec ce pseudo.",
+      );
       return;
     }
 
@@ -1723,7 +1771,7 @@ export function App() {
     });
 
     if (error) {
-      setDatabaseError(error.message);
+      setDatabaseError(describeAppError(error));
       return;
     }
 
@@ -1743,7 +1791,7 @@ export function App() {
       .eq("addressee_id", profile.id);
 
     if (error) {
-      setDatabaseError(error.message);
+      setDatabaseError(describeAppError(error));
       return;
     }
 
@@ -1761,7 +1809,7 @@ export function App() {
       .eq("id", friendshipId);
 
     if (error) {
-      setDatabaseError(error.message);
+      setDatabaseError(describeAppError(error));
       return;
     }
 
@@ -2209,7 +2257,7 @@ function AuthScreen({
               <Mail aria-hidden="true" />
               <input
                 autoComplete="username"
-                placeholder={isRegister ? "alex@mail.fr" : "admin ou alex@mail.fr"}
+                placeholder={isRegister ? "alex@mail.fr" : "pseudo ou alex@mail.fr"}
                 type="text"
                 value={authEmail}
                 onChange={(event) => onAuthEmailChange(event.target.value)}

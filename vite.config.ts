@@ -3,6 +3,20 @@ import react from "@vitejs/plugin-react";
 import adminUsersHandler from "./api/admin-users.js";
 
 function localApiPlugin() {
+  const describeError = (error: unknown) => {
+    if (error instanceof Error) return error.message;
+
+    if (error && typeof error === "object") {
+      try {
+        return JSON.stringify(error);
+      } catch {
+        return String(error);
+      }
+    }
+
+    return String(error);
+  };
+
   return {
     name: "arc-clue-local-api",
     configureServer(server) {
@@ -31,7 +45,7 @@ function localApiPlugin() {
           res.setHeader("Content-Type", "application/json");
           res.end(
             JSON.stringify({
-              error: error instanceof Error ? error.message : String(error),
+              error: describeError(error),
             }),
           );
         }
