@@ -4,14 +4,27 @@ function getAdminEnv() {
   return {
     supabaseUrl: process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL,
     serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
-    initialAdminEmail:
-      process.env.INITIAL_ADMIN_EMAIL || "admin@arc-clue.local",
-    initialAdminPassword: process.env.INITIAL_ADMIN_PASSWORD || "admin",
   };
 }
 
 function json(res, status, body) {
   res.status(status).json(body);
+}
+
+function describeError(error) {
+  if (error instanceof Error) return error.message;
+
+  if (error && typeof error === "object") {
+    if (typeof error.message === "string") return error.message;
+
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+
+  return String(error);
 }
 
 function cleanUsername(value) {
@@ -102,14 +115,6 @@ async function listAuthUsers(supabase) {
   return data.users ?? [];
 }
 
-async function findAuthUserByEmail(supabase, email) {
-  const users = await listAuthUsers(supabase);
-  return (
-    users.find((user) => user.email?.toLowerCase() === email.toLowerCase()) ??
-    null
-  );
-}
-
 async function listUsers(supabase, res) {
   const { data: profiles, error } = await supabase
     .from("profiles")
@@ -134,79 +139,6 @@ async function listUsers(supabase, res) {
         last_sign_in_at: authUser?.last_sign_in_at ?? null,
       };
     }),
-  });
-}
-
-async function bootstrapAdmin(supabase, res) {
-  const { initialAdminEmail, initialAdminPassword } = getAdminEnv();
-
-  const { count, error: countError } = await supabase
-    .from("profiles")
-    .select("id", { count: "exact", head: true })
-    .eq("is_admin", true);
-
-  if (countError) throw countError;
-
-  if ((count ?? 0) > 0) {
-    json(res, 409, { error: "Un admin existe deja." });
-    return;
-  }
-
-  const existingUser = await findAuthUserByEmail(supabase, initialAdminEmail);
-  const user =
-    existingUser ??
-    (
-      await supabase.auth.admin.createUser({
-        email: initialAdminEmail,
-        password: initialAdminPassword,
-        email_confirm: true,
-        user_metadata: { username: "admin" },
-      })
-    ).data.user;
-
-  if (!user) {
-    json(res, 500, { error: "Impossible de creer le compte admin." });
-    return;
-  }
-
-  if (existingUser) {
-    const { error: passwordError } = await supabase.auth.admin.updateUserById(
-      user.id,
-      {
-        password: initialAdminPassword,
-        email_confirm: true,
-        user_metadata: { username: "admin" },
-      },
-    );
-
-    if (passwordError) throw passwordError;
-  }
-
-  const { error: profileError } = await supabase.from("profiles").upsert({
-    id: user.id,
-    username: "admin",
-    is_admin: true,
-  });
-
-  if (profileError) throw profileError;
-
-  json(res, 200, {
-    email: initialAdminEmail,
-    password: initialAdminPassword,
-    username: "admin",
-  });
-}
-
-async function bootstrapStatus(supabase, res) {
-  const { count, error } = await supabase
-    .from("profiles")
-    .select("id", { count: "exact", head: true })
-    .eq("is_admin", true);
-
-  if (error) throw error;
-
-  json(res, 200, {
-    needsBootstrap: (count ?? 0) === 0,
   });
 }
 
@@ -295,13 +227,6 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === "GET") {
-      const url = new URL(req.url ?? "", "http://localhost");
-
-      if (url.searchParams.get("bootstrap") === "status") {
-        await bootstrapStatus(supabase, res);
-        return;
-      }
-
       const actor = await requireAdmin(supabase, req, res);
       if (!actor) return;
 
@@ -311,11 +236,6 @@ export default async function handler(req, res) {
 
     if (req.method === "POST") {
       const body = await readBody(req);
-
-      if (body.action === "bootstrap") {
-        await bootstrapAdmin(supabase, res);
-        return;
-      }
 
       const actor = await requireAdmin(supabase, req, res);
       if (!actor) return;
@@ -346,7 +266,7 @@ export default async function handler(req, res) {
     json(res, 405, { error: "Action admin inconnue." });
   } catch (error) {
     json(res, 500, {
-      error: error instanceof Error ? error.message : String(error),
+      error: describeError(error),
     });
   }
 }

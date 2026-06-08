@@ -57,7 +57,6 @@ import type {
 const PLAYER_ID_STORAGE_KEY = "arc-clue-player-id";
 const PLAYER_NAME_STORAGE_KEY = "arc-clue-player-name";
 const LAST_ROOM_STORAGE_KEY = "arc-clue-last-room";
-const ADMIN_BOOTSTRAP_DONE_STORAGE_KEY = "arc-clue-admin-bootstrap-done";
 const ROOM_ROLE_STORAGE_PREFIX = "arc-clue-room-role:";
 const ROOM_STATE_STORAGE_PREFIX = "arc-clue-room-state:";
 const ROOM_SECRETS_STORAGE_PREFIX = "arc-clue-room-secrets:";
@@ -142,19 +141,6 @@ function getStoredPlayerId() {
   const playerId = createPlayerId();
   localStorage.setItem(PLAYER_ID_STORAGE_KEY, playerId);
   return playerId;
-}
-
-function getStoredNeedsBootstrapAdmin() {
-  return localStorage.getItem(ADMIN_BOOTSTRAP_DONE_STORAGE_KEY) !== "true";
-}
-
-function rememberAdminBootstrapDone(done: boolean) {
-  if (done) {
-    localStorage.setItem(ADMIN_BOOTSTRAP_DONE_STORAGE_KEY, "true");
-    return;
-  }
-
-  localStorage.removeItem(ADMIN_BOOTSTRAP_DONE_STORAGE_KEY);
 }
 
 function clampTargetScore(value: number) {
@@ -477,9 +463,6 @@ export function App() {
   const [authUsername, setAuthUsername] = useState("");
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
-  const [needsBootstrapAdmin, setNeedsBootstrapAdmin] = useState(
-    getStoredNeedsBootstrapAdmin,
-  );
   const [profile, setProfile] = useState<Profile | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const [databaseLoading, setDatabaseLoading] = useState(false);
@@ -785,33 +768,6 @@ export function App() {
     return () => {
       isMounted = false;
       authListener.subscription.unsubscribe();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!hasSupabaseConfig) return;
-
-    let isMounted = true;
-
-    fetch("/api/admin-users?bootstrap=status")
-      .then(async (response) => {
-        const payload = (await response.json()) as {
-          needsBootstrap?: boolean;
-        };
-
-        if (!isMounted || !response.ok) return;
-
-        const needsBootstrap = Boolean(payload.needsBootstrap);
-        rememberAdminBootstrapDone(!needsBootstrap);
-        setNeedsBootstrapAdmin(needsBootstrap);
-      })
-      .catch(() => {
-        if (!isMounted) return;
-        setNeedsBootstrapAdmin(getStoredNeedsBootstrapAdmin());
-      });
-
-    return () => {
-      isMounted = false;
     };
   }, []);
 
@@ -1506,57 +1462,6 @@ export function App() {
     setSession(null);
   };
 
-  const bootstrapAdmin = async () => {
-    if (!supabase) return;
-
-    setAuthLoading(true);
-    setAuthError("");
-
-    try {
-      const response = await fetch("/api/admin-users", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ action: "bootstrap" }),
-      });
-      const payload = (await response.json()) as {
-        email?: string;
-        password?: string;
-        error?: string;
-      };
-
-      if (!response.ok) {
-        if (response.status === 409) {
-          rememberAdminBootstrapDone(true);
-          setNeedsBootstrapAdmin(false);
-        }
-
-        throw new Error(payload.error ?? "Initialisation admin impossible.");
-      }
-
-      const email = payload.email ?? "admin@arc-clue.local";
-      const password = payload.password ?? "admin";
-
-      rememberAdminBootstrapDone(true);
-      setNeedsBootstrapAdmin(false);
-      setAuthMode("login");
-      setAuthEmail("admin");
-      setAuthPassword(password);
-
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-
-      if (error) throw error;
-    } catch (error) {
-      setAuthError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
   const createAdminPlayer = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
@@ -1877,12 +1782,10 @@ export function App() {
         authPassword={authPassword}
         authUsername={authUsername}
         hasSupabaseConfig={hasSupabaseConfig}
-        needsBootstrapAdmin={needsBootstrapAdmin}
         onAuthEmailChange={setAuthEmail}
         onAuthModeChange={setAuthMode}
         onAuthPasswordChange={setAuthPassword}
         onAuthUsernameChange={setAuthUsername}
-        onBootstrapAdmin={bootstrapAdmin}
         onSubmitAuth={submitAuth}
       />
     );
@@ -1898,12 +1801,10 @@ export function App() {
         authPassword={authPassword}
         authUsername={authUsername}
         hasSupabaseConfig={hasSupabaseConfig}
-        needsBootstrapAdmin={needsBootstrapAdmin}
         onAuthEmailChange={setAuthEmail}
         onAuthModeChange={setAuthMode}
         onAuthPasswordChange={setAuthPassword}
         onAuthUsernameChange={setAuthUsername}
-        onBootstrapAdmin={bootstrapAdmin}
         onSubmitAuth={submitAuth}
       />
     );
@@ -2247,12 +2148,10 @@ type AuthScreenProps = {
   authPassword: string;
   authUsername: string;
   hasSupabaseConfig: boolean;
-  needsBootstrapAdmin: boolean;
   onAuthEmailChange: (value: string) => void;
   onAuthModeChange: (value: AuthMode) => void;
   onAuthPasswordChange: (value: string) => void;
   onAuthUsernameChange: (value: string) => void;
-  onBootstrapAdmin: () => void;
   onSubmitAuth: (event: FormEvent<HTMLFormElement>) => void;
 };
 
@@ -2264,12 +2163,10 @@ function AuthScreen({
   authPassword,
   authUsername,
   hasSupabaseConfig,
-  needsBootstrapAdmin,
   onAuthEmailChange,
   onAuthModeChange,
   onAuthPasswordChange,
   onAuthUsernameChange,
-  onBootstrapAdmin,
   onSubmitAuth,
 }: AuthScreenProps) {
   const isRegister = authMode === "register";
@@ -2351,16 +2248,6 @@ function AuthScreen({
             {isRegister ? "J'ai deja un compte" : "Creer un compte"}
           </button>
 
-          {!isRegister && needsBootstrapAdmin && (
-            <button
-              className="button button--ghost"
-              disabled={!hasSupabaseConfig || authLoading}
-              type="button"
-              onClick={onBootstrapAdmin}
-            >
-              Initialiser admin/admin
-            </button>
-          )}
         </form>
       </section>
     </main>

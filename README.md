@@ -23,12 +23,6 @@ disparait. Les comptes, amis et themes restent en base.
 
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
-- `INITIAL_ADMIN_EMAIL`
-- `INITIAL_ADMIN_PASSWORD`
-
-Par defaut, le premier admin peut etre initialise avec `admin` / `admin`.
-Change ce mot de passe juste apres la premiere connexion depuis le panneau
-admin.
 
 7. Lance :
 
@@ -37,12 +31,12 @@ npm install
 npm run dev
 ```
 
-Pour rendre un compte admin manuellement :
+Pour creer le premier admin, cree d'abord ton compte depuis l'app, puis lance :
 
 ```sql
 update public.profiles
 set is_admin = true
-where username = 'ton-pseudo';
+where lower(username) = lower('ton-pseudo');
 ```
 
 Depuis l'app, un admin peut aussi :
@@ -60,8 +54,6 @@ Ajoute les deux variables d'environnement dans Vercel :
 - `VITE_SUPABASE_PUBLISHABLE_KEY`
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
-- `INITIAL_ADMIN_EMAIL`
-- `INITIAL_ADMIN_PASSWORD`
 
 Vercel detectera Vite automatiquement. La commande de build est :
 
