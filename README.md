@@ -5,22 +5,52 @@ Petit jeu temps reel a 2 joueurs, deployable sur Vercel sans serveur dedie.
 ## Architecture
 
 - Vercel heberge l'app Vite/React.
-- Supabase Realtime gere uniquement les rooms, la presence et le chat.
-- Aucune table, aucune DB, aucun historique.
+- Supabase Auth gere les comptes email/mot de passe.
+- Supabase Postgres stocke les profils, themes, groupes de themes et amis.
+- Supabase Realtime gere les rooms, la presence et le chat.
 
-La partie est ephemere : si les deux joueurs quittent la room, son etat disparait.
+La partie live reste ephemere : si les deux joueurs quittent la room, son etat
+disparait. Les comptes, amis et themes restent en base.
 
 ## Configuration locale
 
 1. Cree un projet Supabase.
-2. Copie `.env.example` vers `.env.local`.
-3. Renseigne `VITE_SUPABASE_URL` et `VITE_SUPABASE_PUBLISHABLE_KEY`.
-4. Lance :
+2. Dans le SQL editor Supabase, execute `supabase/schema.sql`.
+3. Dans Auth > Providers > Email, desactive la confirmation email.
+4. Copie `.env.example` vers `.env.local`.
+5. Renseigne `VITE_SUPABASE_URL` et `VITE_SUPABASE_PUBLISHABLE_KEY`.
+6. Renseigne aussi les variables serveur pour les actions admin :
+
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `INITIAL_ADMIN_EMAIL`
+- `INITIAL_ADMIN_PASSWORD`
+
+Par defaut, le premier admin peut etre initialise avec `admin` / `admin`.
+Change ce mot de passe juste apres la premiere connexion depuis le panneau
+admin.
+
+7. Lance :
 
 ```bash
 npm install
 npm run dev
 ```
+
+Pour rendre un compte admin manuellement :
+
+```sql
+update public.profiles
+set is_admin = true
+where username = 'ton-pseudo';
+```
+
+Depuis l'app, un admin peut aussi :
+
+- creer un joueur ;
+- passer un joueur admin ou le repasser joueur ;
+- changer le mot de passe d'un joueur ;
+- gerer les themes globaux.
 
 ## Deploiement Vercel
 
@@ -28,6 +58,10 @@ Ajoute les deux variables d'environnement dans Vercel :
 
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_PUBLISHABLE_KEY`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `INITIAL_ADMIN_EMAIL`
+- `INITIAL_ADMIN_PASSWORD`
 
 Vercel detectera Vite automatiquement. La commande de build est :
 
@@ -60,5 +94,6 @@ locale sont sauvegardes dans le navigateur pendant 12 heures. Si un joueur
 recharge ou ferme l'onglet par accident, il peut rouvrir l'app et rejoindre la
 partie avec le meme navigateur.
 
-Sans base de donnees, une reprise sur un autre appareil ou apres suppression du
-stockage local n'est pas garantie.
+La reprise de la room live utilise encore le stockage local du navigateur. Une
+reprise sur un autre appareil ou apres suppression du stockage local n'est pas
+garantie.

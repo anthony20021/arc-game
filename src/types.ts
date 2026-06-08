@@ -13,12 +13,13 @@ export type Player = {
   isHost: boolean;
 };
 
-export type GamePhase = "clue" | "guess" | "reveal";
+export type GamePhase = "clue" | "guess" | "reveal" | "finished";
 
 export type GameState = {
   phase: GamePhase;
   round: number;
   theme: string;
+  targetScore?: number;
   clueGiverId: string;
   guesserId: string;
   clue?: string;
@@ -26,6 +27,7 @@ export type GameState = {
   secret?: number;
   score?: number;
   distance?: number;
+  winnerId?: string;
   scores: Record<string, number>;
   updatedAt: number;
 };

@@ -1,6 +1,8 @@
 import type { GameState, Player } from "./types";
 
-export const THEMES = [
+export const DEFAULT_TARGET_SCORE = 15;
+
+export const DEFAULT_THEMES = [
   "Nourriture sucree",
   "Nourriture salee",
   "Plat maison",
@@ -38,6 +40,14 @@ export const THEMES = [
   "Dessin animé",
   "Série",
 ];
+
+export const THEMES = DEFAULT_THEMES;
+
+type NextTurnOptions = {
+  resetScores?: boolean;
+  targetScore?: number;
+  themes?: string[];
+};
 
 export function createRoomCode() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -82,12 +92,19 @@ export function sortPlayers(players: Player[]) {
   });
 }
 
-export function pickTheme(previousTheme?: string) {
-  const availableThemes = THEMES.filter((theme) => theme !== previousTheme);
-  return availableThemes[Math.floor(Math.random() * availableThemes.length)];
+export function pickTheme(themes = DEFAULT_THEMES, previousTheme?: string) {
+  const usableThemes = themes.length > 0 ? themes : DEFAULT_THEMES;
+  const availableThemes = usableThemes.filter((theme) => theme !== previousTheme);
+  const pool = availableThemes.length > 0 ? availableThemes : usableThemes;
+
+  return pool[Math.floor(Math.random() * pool.length)];
 }
 
-export function createNextTurn(players: Player[], previous?: GameState): GameState {
+export function createNextTurn(
+  players: Player[],
+  previous?: GameState,
+  options: NextTurnOptions = {},
+): GameState {
   const activePlayers = sortPlayers(players).slice(0, 2);
 
   if (activePlayers.length < 2) {
@@ -97,14 +114,19 @@ export function createNextTurn(players: Player[], previous?: GameState): GameSta
   const round = (previous?.round ?? 0) + 1;
   const clueGiver = activePlayers[(round - 1) % activePlayers.length];
   const guesser = activePlayers[round % activePlayers.length];
+  const targetScore = Math.max(
+    1,
+    Math.round(options.targetScore ?? previous?.targetScore ?? DEFAULT_TARGET_SCORE),
+  );
 
   return {
     phase: "clue",
     round,
-    theme: pickTheme(previous?.theme),
+    theme: pickTheme(options.themes, previous?.theme),
+    targetScore,
     clueGiverId: clueGiver.id,
     guesserId: guesser.id,
-    scores: previous?.scores ?? {},
+    scores: options.resetScores ? {} : previous?.scores ?? {},
     updatedAt: Date.now(),
   };
 }
