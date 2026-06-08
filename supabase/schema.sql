@@ -91,7 +91,13 @@ set search_path = public
 as $$
 begin
   insert into public.profiles (id, username)
-  values (new.id, 'joueur-' || substr(new.id::text, 1, 8))
+  values (
+    new.id,
+    coalesce(
+      nullif(trim(new.raw_user_meta_data->>'username'), ''),
+      'joueur-' || substr(new.id::text, 1, 8)
+    )
+  )
   on conflict (id) do nothing;
 
   return new;
@@ -102,6 +108,46 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
+
+with auth_profile_candidates as (
+  select
+    auth_users.id,
+    auth_users.created_at,
+    coalesce(
+      nullif(trim(auth_users.raw_user_meta_data->>'username'), ''),
+      'joueur-' || substr(auth_users.id::text, 1, 8)
+    ) as base_username
+  from auth.users as auth_users
+  where not exists (
+    select 1
+    from public.profiles
+    where profiles.id = auth_users.id
+  )
+),
+numbered_candidates as (
+  select
+    *,
+    row_number() over (
+      partition by lower(base_username)
+      order by created_at, id
+    ) as duplicate_index
+  from auth_profile_candidates
+)
+insert into public.profiles (id, username)
+select
+  id,
+  case
+    when duplicate_index = 1
+      and not exists (
+        select 1
+        from public.profiles
+        where lower(profiles.username) = lower(numbered_candidates.base_username)
+      )
+      then base_username
+    else left(base_username, 19) || '-' || substr(id::text, 1, 4)
+  end
+from numbered_candidates
+on conflict do nothing;
 
 create or replace function public.is_admin(user_id uuid default auth.uid())
 returns boolean

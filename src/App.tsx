@@ -191,13 +191,14 @@ function describeAppError(error: unknown) {
     const hint = typeof record.hint === "string" ? record.hint : "";
 
     if (
+      code === "ARC_PROFILE_MISSING" ||
       code === "PGRST205" ||
       message.includes("public.profiles") ||
       message.includes("schema cache")
     ) {
       return [
-        "Base Supabase pas initialisee : la table public.profiles est introuvable.",
-        "Execute supabase/schema.sql dans le SQL Editor Supabase, puis recharge l'app.",
+        "Base Supabase pas initialisee : le profil joueur est introuvable.",
+        "Execute supabase/schema.sql dans le SQL Editor Supabase, puis reconnecte-toi.",
         code ? `Code: ${code}.` : "",
       ]
         .filter(Boolean)
@@ -206,6 +207,14 @@ function describeAppError(error: unknown) {
 
     if (message.toLowerCase().includes("user already registered")) {
       return "Ce compte existe deja. Clique sur \"J'ai deja un compte\" puis connecte-toi.";
+    }
+
+    if (
+      code === "23505" &&
+      (message.includes("profiles_username_lower_key") ||
+        details.includes("already exists"))
+    ) {
+      return "Ce pseudo est deja pris. Choisis-en un autre.";
     }
 
     if (message) {
@@ -224,6 +233,13 @@ function describeAppError(error: unknown) {
   if (error instanceof Error) return error.message;
 
   return String(error);
+}
+
+function createMissingProfileError() {
+  return {
+    code: "ARC_PROFILE_MISSING",
+    message: "public.profiles row missing",
+  };
 }
 
 async function ensureProfile(user: User, requestedUsername?: string) {
@@ -257,30 +273,7 @@ async function ensureProfile(user: User, requestedUsername?: string) {
     return profile;
   }
 
-  const { data: inserted, error: insertError } = await supabase
-    .from("profiles")
-    .insert({
-      id: user.id,
-      username,
-    })
-    .select("id, username, is_admin")
-    .maybeSingle();
-
-  if (insertError) {
-    const { data: fallback, error: fallbackError } = await supabase
-      .from("profiles")
-      .insert({
-        id: user.id,
-        username: `joueur-${user.id.slice(0, 8)}`,
-      })
-      .select("id, username, is_admin")
-      .maybeSingle();
-
-    if (fallbackError) throw insertError;
-    return fallback as Profile;
-  }
-
-  return inserted as Profile;
+  throw createMissingProfileError();
 }
 
 function getRoomRoleStorageKey(roomCode: string) {
@@ -1474,10 +1467,6 @@ export function App() {
         });
 
         if (error) throw error;
-
-        if (data.user) {
-          await ensureProfile(data.user, username);
-        }
 
         if (!data.session) {
           setAuthError(
